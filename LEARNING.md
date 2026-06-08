@@ -5,7 +5,6 @@
 > understand not just *what* the code does, but *why* it's built that way.
 >
 > This document grows as the project grows. Each phase gets its own section.
->
 
 ---
 
@@ -21,6 +20,8 @@
 8. [Why we chose Groq](#8-why-we-chose-groq)
 9. [Commands cheat sheet](#9-commands-cheat-sheet)
 10. [Glossary of "scary" Python syntax](#10-glossary-of-scary-python-syntax)
+11. [Tokens and chunking — the deep concept](#11-tokens-and-chunking--the-deep-concept)
+12. [Planned: monitoring & observability](#12-planned-monitoring--observability)
 
 ---
 
@@ -632,5 +633,236 @@ Quick reference for syntax that looks intimidating but is simple once named.
 
 ---
 
-*Next up: the ingestion pipeline — extracting text from documents, then chunking
-it into ~700-token pieces. This section will be added when we build it.*
+## 11. Tokens and chunking — the deep concept
+
+> This is the most important concept in the whole project. Understanding it is
+> what separates "I followed a RAG tutorial" from "I understand RAG."
+
+### What a token actually is
+An AI model doesn't read letters or words — it reads **tokens**: pieces from a
+fixed vocabulary of ~100,000 known chunks. A token can be a whole word, a
+word-fragment, a single character, or punctuation. A leading space is usually
+part of the token.
+
+Real examples (using the cl100k_base tokenizer):
+
+| Text | Tokens | Count |
+|---|---|---|
+| `cat` | `cat` | 1 |
+| `unbelievable` | `un` · `bel` · `iev` · `able` | 4 |
+| `ChromaDB` | `Ch` · `roma` · `DB` | 3 |
+| `the dog` | `the` · ` dog` | 2 |
+| `4.2(b)` | `4` · `.` · `2` · `(` · `b` · `)` | 6 |
+
+Rule of thumb: **1 token ≈ 0.75 words ≈ 4 characters** — but only on average.
+
+#### Diagram: one sentence becoming tokens
+
+```
+"Renewal requires 30 days notice."
+
+ ┌─────────┐┌──────────┐┌────┐┌──────┐┌────────┐┌───┐
+ │ Renewal ││ requires ││ 30 ││ days ││ notice ││ . │   = 6 tokens
+ └─────────┘└──────────┘└────┘└──────┘└────────┘└───┘
+   note: the space attaches to the next word ("·requires"),
+   and the full stop is its own token.
+```
+
+### Why we measure in tokens, not characters
+The token count is **unpredictable from the character count**. Dense technical
+text (clause numbers, codes, jargon) packs more tokens into the same characters
+than plain prose. Example: 1000 characters of legal text ≈ 350 tokens, but 1000
+characters of a simple story ≈ 200 tokens.
+
+**This is why we can't split "every 3000 characters"** — we'd get chunks that are
+sometimes 400 tokens and sometimes 800. We use the `tiktoken` library to count
+tokens *exactly*.
+
+#### Diagram: same characters, different token counts
+
+```
+Dense / technical text (clause 4.2(b), GSTIN, codes…)
+ ┌────────────────────────────────────────┐
+ │ 1000 characters                         │  ≈ 350 tokens   (more tokens)
+ └────────────────────────────────────────┘
+
+Plain prose (a simple story)
+ ┌────────────────────────────────────────┐
+ │ 1000 characters                         │  ≈ 200 tokens   (fewer tokens)
+ └────────────────────────────────────────┘
+
+  Same width on the page, very different token counts.
+  → fixed-character chunks would be wildly inconsistent in token size.
+```
+
+### Why chunk at all (three reasons)
+1. **Hard limit:** a whole document is too many tokens to fit in the model's
+   context window.
+2. **Cost and speed:** you pay per token; sending an entire document for every
+   question wastes money and time when 99% is irrelevant.
+3. **Focus improves answers:** a single relevant 700-token passage produces a
+   better answer than 50,000 tokens where the answer is one buried sentence.
+   Less but more relevant context = better answers, not just cheaper ones.
+
+So: chop the document into pieces *once* at upload time, then at question time
+retrieve only the few pieces that matter.
+
+### Why ~700 tokens
+A size dial, with a tradeoff at each end:
+- **Too small** (one sentence): laser-focused but loses context. "This must be
+  submitted within 30 days" is useless if you don't know what *this* is.
+- **Too large** (whole chapter): full of context but the answer is buried in
+  irrelevant text, hurting focus and cost.
+- **Sweet spot:** 500–800 tokens ≈ one dense page. We picked **700** as a solid
+  middle. It's an empirically reliable default you'd *tune* per document type.
+
+### Why overlap (~100 tokens)
+If we cut cleanly at 700 tokens, a cut can land mid-paragraph and orphan context:
+
+> *...renewals are handled by the vendor portal.* **[CUT]** *The portal closes at
+> 5pm on the last business day.*
+
+Someone asking "when does the renewal portal close?" gets chunk 2, which never
+says *which* portal or that it's about *renewals* — that was in chunk 1.
+
+**Fix:** each chunk shares its last ~100 tokens with the start of the next, so
+chunk 2 begins with the tail of chunk 1 and is self-contained. Overlap is a
+safety margin that stops meaning falling through the cracks at boundaries.
+Tradeoff: more overlap = safer context but more chunks to store.
+
+#### Diagram: the sliding window with overlap
+
+```
+The document is one long stream of tokens:
+ token 0 ───────────────────────────────────────────────► token N
+
+We slide a 700-token window forward, but step back 100 each time so
+windows overlap:
+
+ Chunk 1:  [ tokens 0 ──────────────── 699 ]
+ Chunk 2:              [ 600 ──────────────── 1299 ]
+ Chunk 3:                          [ 1200 ──────────────── 1899 ]
+                        ╰──┬──╯              ╰──┬──╯
+                       100 shared           100 shared
+
+ The shared region means a sentence split across a boundary keeps its
+ context: the tail of chunk 1 reappears at the start of chunk 2.
+```
+
+### Why split on sentences first
+If we *only* counted tokens we'd sometimes slice mid-sentence (or mid-word),
+producing meaningless fragments. So the chunker splits into **sentences** first,
+then groups whole sentences into ~700-token windows. Every chunk ends on a clean
+sentence boundary — we never cut mid-thought.
+
+### The complete mental model
+**Split into sentences → group sentences into ~700-token windows → overlap each
+window with the next by ~100 tokens → never cut mid-sentence.**
+
+#### Diagram: the chunker pipeline
+
+```
+  raw document text
+        │
+        ▼
+  ┌──────────────────┐   split on . ! ? so we never cut mid-sentence
+  │ split into        │
+  │ sentences         │
+  └──────────────────┘
+        │  [s1, s2, s3, s4, ...]
+        ▼
+  ┌──────────────────┐   add whole sentences until the next one would
+  │ group into        │   push the window over ~700 tokens
+  │ 700-token windows │
+  └──────────────────┘
+        │
+        ▼
+  ┌──────────────────┐   seed each new window with the last ~100 tokens
+  │ apply 100-token   │   of the previous one
+  │ overlap           │
+  └──────────────────┘
+        │
+        ▼
+  list of Chunk objects  (each: text + token_count + index + metadata)
+```
+
+---
+
+## 12. Planned: monitoring & observability
+
+> **Status: planned, not built yet.** Documented here because it's the part of
+> production AI work most portfolios ignore — and understanding *why* it matters
+> is as valuable as the code itself.
+
+### Why this matters
+Most RAG projects stop at "it produces answers." But producing answers is maybe
+30% of real production AI work. The other ~70% is *operating* the system:
+knowing how fast it is, what it costs, and whether its quality is drifting over
+time. A system you can't observe is a system you can't trust in production.
+
+This is the difference between "I built a RAG demo" and "I built a RAG system I
+could actually run and maintain."
+
+### The five pieces
+
+**1. Tracing**
+Follow a single question through every stage — retrieve → rerank → generate —
+and see how long each stage took and what it produced. Think of it like a receipt
+that itemises where the time went. Tools: OpenTelemetry, or LangSmith (which pairs
+naturally with LangGraph — each graph node becomes a traced step almost for free).
+
+**2. Latency percentiles (p50 / p95)**
+- **p50** (median): half of requests are faster than this, half slower.
+- **p95**: 95% of requests are faster than this; it captures the slow tail.
+Why p95 matters more than the average: the average hides bad experiences. "Most
+users wait 800ms, but the slowest 5% wait 3+ seconds" is the insight that drives
+real optimisation — and the average would never reveal it.
+
+**3. Cost-per-request**
+Track tokens sent + received per question, multiply by the model's price. Now you
+know what each answer actually costs. Cheap to add because the system already
+counts tokens (the chunker uses tiktoken).
+
+**4. Production quality metrics**
+The live cousin of the RAGAS CI eval. Sample real answers in production and score
+them, so you catch quality *drift* after deployment — not just in CI before it.
+
+**5. Regression gating in CI**
+We already plan to gate merges on RAGAS quality scores. Observability extends the
+gate: a change that makes the system slower or more expensive — not just lower
+quality — also fails the build.
+
+### How this influences the code we write NOW
+Observability is hard to bolt on later and easy to design in early. From the
+retrieval phase onward, the code is written with **observability seams**:
+- functions return consistent shapes that can carry timing + token metadata
+- each stage has a clean boundary where a timing/tracing wrapper can slot in
+- token counts are already tracked, so cost tracking is "fill in the price"
+
+This means adding observability later is *additive* (fill in the hooks), not a
+rewrite. Designing for this from the start is itself a senior engineering habit.
+
+### framing
+*"Most RAG portfolios stop at 'it produces answers.' But ~70% of production AI
+work is operating the system — latency, cost, and quality drift. So I designed
+the code with observability seams from the start, and the roadmap includes
+tracing, p50/p95 latency, cost-per-request, and CI gates on regressions, not just
+quality."*
+
+---
+
+## Progress log
+
+| Date | What we did |
+|---|---|
+| (fill in) | Set up project scaffold, venv, git branching model |
+| (fill in) | Wrote and understood `config.py` with Pydantic validation |
+| (fill in) | Switched LLM provider to Groq |
+| (fill in) | Created README with architecture diagram |
+| (fill in) | Created this learning document |
+| (fill in) | Learned tokens and chunking concepts |
+| (fill in) | Built the chunker |
+
+---
+
+*Next up: building the chunker line by line, then the embedder and BM25 index.*
