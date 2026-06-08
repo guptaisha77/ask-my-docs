@@ -30,6 +30,9 @@ This project addresses all three:
   source passages, so responses are auditable rather than trusted blindly.
 - **CI-gated evaluation** runs RAGAS metrics on every pull request and blocks
   merges that regress answer quality below set thresholds.
+- **Monitoring & observability** (planned) adds tracing, latency percentiles
+  (p50/p95), and cost-per-request — because operating a RAG system is most of the
+  real work, and the code is built with the seams to support it from the start.
 
 ---
 
@@ -123,6 +126,7 @@ flowchart TD
 | LangGraph agent + citation enforcement | ⬜ Planned |
 | React frontend | ⬜ Planned |
 | RAGAS evaluation + CI gate | ⬜ Planned |
+| Monitoring & observability (tracing, p50/p95 latency, cost-per-request) | ⬜ Planned |
 
 ---
 
