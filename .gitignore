@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Secrets
+.env
+backend/.env
+
+# Local databases (generated, not source code)
+backend/chroma_db/
+backend/bm25_index.pkl
+
+# Frontend build output
+frontend/node_modules/
+frontend/dist/
+
+# Editor files
+.vscode/
+.idea/
+*.DS_Store
