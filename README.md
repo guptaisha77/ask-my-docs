@@ -119,10 +119,11 @@ flowchart TD
 | Component | Status |
 |---|---|
 | Project scaffold + config | ✅ Done |
-| Document ingestion (extract, chunk) | 🚧 In progress |
-| Embedding + ChromaDB storage | ⬜ Planned |
-| BM25 keyword index | ⬜ Planned |
-| Hybrid retrieval + Cohere reranking | ⬜ Planned |
+| Document ingestion — token-aware chunker | ✅ Done |
+| Embedding + ChromaDB storage | ✅ Done |
+| BM25 keyword index | ✅ Done |
+| Text extractor (PDF / plaintext) | ⬜ Planned |
+| Hybrid retrieval + Cohere reranking | 🚧 In progress |
 | LangGraph agent + citation enforcement | ⬜ Planned |
 | React frontend | ⬜ Planned |
 | RAGAS evaluation + CI gate | ⬜ Planned |
@@ -209,9 +210,9 @@ ask-my-docs/
 
 ## Documentation
 
-Beyond this README, the repo includes living documentation written during the build:
+Beyond this README, `LEARNING.md` is a living learning log written during the
+build — it explains every component and the reasoning behind each decision.
 
-- `LEARNING.md` — a learning log explaining every component and the reasoning behind it
 ---
 
 ## License
