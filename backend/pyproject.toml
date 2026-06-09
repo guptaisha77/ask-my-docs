@@ -1,0 +1,62 @@
+# pyproject.toml — the standard Python project configuration file.
+# It defines project metadata AND configures dev tools (Ruff, pytest) in one place
+
+[project]
+name = "ask-my-docs-backend"
+version = "0.1.0"
+description = "Enterprise RAG system with hybrid retrieval, reranking, and CI-gated evaluation"
+requires-python = ">=3.12"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ruff — linter + formatter
+# ──────────────────────────────────────────────────────────────────────────
+[tool.ruff]
+# Target the Python version you run, so Ruff's suggestions match your runtime.
+target-version = "py312"
+# Max line length before the formatter wraps. 88 is the modern default.
+line-length = 88
+# Folders/files Ruff should ignore entirely.
+exclude = [
+    ".venv",
+    "chroma_db",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+# Rule groups to enable, by their letter codes:
+#   E, W -> pycodestyle errors/warnings (PEP 8 style: blank lines, spacing)
+#   F    -> pyflakes (real bugs: unused imports, undefined names)
+#   I    -> isort (keeps imports sorted and grouped)
+#   UP   -> pyupgrade (suggests modern Python syntax)
+#   B    -> flake8-bugbear (likely bugs and risky patterns)
+#   C4   -> flake8-comprehensions (cleaner list/dict comprehensions)
+#   SIM  -> flake8-simplify (simpler equivalent code)
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
+
+# Rules to switch off even though their group is selected.
+ignore = [
+    # E501: line too long — the FORMATTER handles wrapping, so we don't also
+    # want the linter complaining about the occasional unavoidable long line
+    # (e.g. a long URL or error message).
+    "E501",
+]
+
+[tool.ruff.lint.isort]
+# Treat our own package as "first-party" so its imports are grouped separately
+# from third-party ones (the blank-line grouping you've been doing by hand).
+known-first-party = ["app"]
+
+[tool.ruff.format]
+# Consistent double quotes (matches the frontend's Biome setting).
+quote-style = "double"
+# Add trailing commas in multi-line collections (cleaner git diffs).
+skip-magic-trailing-comma = false
+
+# ──────────────────────────────────────────────────────────────────────────
+# pytest — test runner configuration (used later when we add tests)
+# ──────────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+# Where pytest looks for test files.
+testpaths = ["tests", "eval"]
+# Automatically handle async test functions (FastAPI tests need this).
+asyncio_mode = "auto"
