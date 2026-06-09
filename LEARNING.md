@@ -21,7 +21,8 @@
 9. [Commands cheat sheet](#9-commands-cheat-sheet)
 10. [Glossary of "scary" Python syntax](#10-glossary-of-scary-python-syntax)
 11. [Tokens and chunking — the deep concept](#11-tokens-and-chunking--the-deep-concept)
-12. [Planned: monitoring & observability](#12-planned-monitoring--observability)
+12. [Embeddings and vector search — the deep concept](#12-embeddings-and-vector-search--the-deep-concept)
+13. [Planned: monitoring & observability](#13-planned-monitoring--observability)
 
 ---
 
@@ -786,9 +787,131 @@ window with the next by ~100 tokens → never cut mid-sentence.**
   list of Chunk objects  (each: text + token_count + index + metadata)
 ```
 
+*"Why not just split a document every 3000 characters?"*
+Because token count isn't proportional to character count — dense text has more
+tokens per character than prose — so fixed-character chunks would be wildly
+inconsistent in token size. We measure tokens directly with tiktoken, split on
+sentence boundaries so chunks stay coherent, and overlap them so context isn't
+lost where one chunk ends and the next begins.
+
 ---
 
-## 12. Planned: monitoring & observability
+## 12. Embeddings and vector search — the deep concept
+
+> The other half of "how does search-by-meaning work." Tokens + chunking prepare
+> the text; embeddings make it *searchable by meaning*.
+
+### The core problem
+A computer can compare numbers (`5` vs `7`) and check if two strings are
+identical (`"cat" == "cat"`). But it has no built-in way to know that `"dog"` and
+`"puppy"` are *related in meaning* while `"dog"` and `"fridge"` are not — they
+share no letters that would reveal it.
+
+An **embedding** turns each piece of text into a list of numbers, arranged so that
+**texts with similar meanings get similar numbers.** Once meaning is expressed as
+numbers, the computer can do math on it: "how related are these two texts?"
+becomes "how close are these two lists of numbers?" — answered instantly.
+
+### A toy example: 2 numbers per word
+Describe each word with just two numbers — how animal-like (0–1) and how large (0–1):
+
+| Word | animal-ness | largeness |
+|---|---|---|
+| puppy | 0.9 | 0.2 |
+| dog | 0.9 | 0.4 |
+| elephant | 0.9 | 0.95 |
+| pebble | 0.05 | 0.1 |
+
+Plot them as points (animal-ness across, largeness up):
+
+```
+ largeness
+   ▲
+   │                                   ● elephant (0.9, 0.95)
+   │
+   │
+   │                                   ● dog   (0.9, 0.4)
+   │                                   ● puppy (0.9, 0.2)   ← puppy & dog
+   │  ● pebble (0.05, 0.1)                                    sit very close
+   └─────────────────────────────────────────────────►  animal-ness
+```
+
+`puppy` and `dog` land right next to each other (both very animal, both smallish).
+`elephant` is directly above `dog` (equally animal, much larger). `pebble` sits
+far away in the corner. **Distance between points now encodes how related the
+words are.** That is the entire trick.
+
+### The real thing: 384 numbers, not 2
+A real model uses **384 numbers** per text (that's what `all-MiniLM-L6-v2`, our
+model, produces). You can't picture 384-dimensional space — nobody can — but the
+*math* works exactly like the 2D picture: each text is a point, and closeness
+still means similar meaning.
+
+The model **learned its 384 "qualities" on its own** by reading huge amounts of
+text during training. Nobody hand-picked them; no human fully knows what dimension
+#207 means. But collectively the 384 numbers capture meaning well enough that
+"payment terms" and "invoice settlement period" land close together — even with
+no shared words. That is why semantic search works.
+
+### Measuring closeness: cosine similarity
+How does the computer measure closeness between two 384-number lists? The standard
+for text is **cosine similarity**: imagine an arrow from the origin to each text's
+point, and measure the **angle between the two arrows** (not the distance between
+their tips).
+
+Why angle, not distance? It makes the comparison fair regardless of length. A
+short sentence and a long paragraph about the same topic have arrows of different
+*lengths* but pointing the same *direction* — a small angle. Cosine captures "same
+direction = same topic" and ignores length.
+
+```
+   short text  ──►
+                  ╲  small angle  →  very similar meaning
+   long text   ────►
+
+   text A   ──►
+              │  90° angle      →  unrelated
+   text B     ▼
+```
+
+Score runs from -1 to 1: near **1** = almost same direction (similar meaning),
+near **0** = unrelated, negative = opposite. For text you mostly see 0 to 1.
+
+### Where ChromaDB fits
+**ChromaDB** is a *vector database* — its job is to hold thousands of these
+vectors and, given a query vector, quickly find the stored ones at the smallest
+angle to it.
+
+- A **normal database** finds *exact* matches ("the row where id = 42").
+- A **vector database** finds *nearest* matches ("the 5 vectors closest in
+  direction to this one"). Different kind of search → specialised tool.
+
+The convenient part: ChromaDB does the embedding *for* us. We hand it the chunk
+text and tell it which embedding model to use; it runs the model, stores the
+vector, and keeps the original text + metadata alongside. At query time we hand it
+a question, it embeds that too, finds the nearest chunks, and returns their text.
+We never juggle the 384 numbers by hand.
+
+### The complete mental model
+**Text → embedding model → a point in 384-dimensional space; similar meanings land
+close together; ChromaDB stores those points and finds the nearest ones to your
+question by comparing angles (cosine similarity).**
+
+*"How can semantic search find 'invoice settlement period' when you searched for
+'payment terms', with no shared words?"*
+Because we don't match words — we match *meaning*. An embedding model maps each
+piece of text to a point in a high-dimensional space (384 dims for MiniLM) where
+texts about the same concept land close together, regardless of vocabulary. The
+model learned those dimensions from huge text corpora. At query time we embed the
+question into the same space and return the chunks whose vectors point most nearly
+the same direction (highest cosine similarity) — so conceptually-related text is
+found even when the exact words differ. This is exactly why we *also* keep BM25
+keyword search: it catches the exact-string cases (codes, clause numbers) where
+matching meaning isn't enough.
+
+---
+
+## 13. Planned: monitoring & observability
 
 > **Status: planned, not built yet.** Documented here because it's the part of
 > production AI work most portfolios ignore — and understanding *why* it matters
@@ -842,7 +965,7 @@ retrieval phase onward, the code is written with **observability seams**:
 This means adding observability later is *additive* (fill in the hooks), not a
 rewrite. Designing for this from the start is itself a senior engineering habit.
 
-### framing
+### Framing
 *"Most RAG portfolios stop at 'it produces answers.' But ~70% of production AI
 work is operating the system — latency, cost, and quality drift. So I designed
 the code with observability seams from the start, and the roadmap includes
@@ -862,7 +985,8 @@ quality."*
 | (fill in) | Created this learning document |
 | (fill in) | Learned tokens and chunking concepts |
 | (fill in) | Built the chunker |
+| (fill in) | Learned embeddings and vector search concepts |
 
 ---
 
-*Next up: building the chunker line by line, then the embedder and BM25 index.*
+*Next up: building the embedder (stores chunks in ChromaDB), then the BM25 index.*
