@@ -20,5 +20,4 @@ frontend/dist/
 .vscode/
 .idea/
 *.DS_Store
-docs/PYTHON_FUNDAMENTALS.md
-docs/STORY.md
+docs/

@@ -22,7 +22,8 @@
 10. [Glossary of "scary" Python syntax](#10-glossary-of-scary-python-syntax)
 11. [Tokens and chunking — the deep concept](#11-tokens-and-chunking--the-deep-concept)
 12. [Embeddings and vector search — the deep concept](#12-embeddings-and-vector-search--the-deep-concept)
-13. [Planned: monitoring & observability](#13-planned-monitoring--observability)
+13. [BM25 keyword search — the deep concept](#13-bm25-keyword-search--the-deep-concept)
+14. [Planned: monitoring & observability](#14-planned-monitoring--observability)
 
 ---
 
@@ -787,7 +788,7 @@ window with the next by ~100 tokens → never cut mid-sentence.**
   list of Chunk objects  (each: text + token_count + index + metadata)
 ```
 
-*"Why not just split a document every 3000 characters?"*
+### In one paragraph: why not just split every 3000 characters?
 Because token count isn't proportional to character count — dense text has more
 tokens per character than prose — so fixed-character chunks would be wildly
 inconsistent in token size. We measure tokens directly with tiktoken, split on
@@ -897,8 +898,9 @@ We never juggle the 384 numbers by hand.
 close together; ChromaDB stores those points and finds the nearest ones to your
 question by comparing angles (cosine similarity).**
 
-*"How can semantic search find 'invoice settlement period' when you searched for
-'payment terms', with no shared words?"*
+### In one paragraph: how can it match with no shared words?
+*How can semantic search find 'invoice settlement period' when you searched for
+'payment terms', with no shared words?*
 Because we don't match words — we match *meaning*. An embedding model maps each
 piece of text to a point in a high-dimensional space (384 dims for MiniLM) where
 texts about the same concept land close together, regardless of vocabulary. The
@@ -911,7 +913,93 @@ matching meaning isn't enough.
 
 ---
 
-## 13. Planned: monitoring & observability
+## 13. BM25 keyword search — the deep concept
+
+> The keyword half of hybrid retrieval. Embeddings match meaning; BM25 matches
+> exact words. Together they cover each other's blind spots.
+
+### Why you need it (vector search has a blind spot)
+Vector search finds by *meaning* — great for "when do I pay?" matching "payment is
+due." But it has *no meaningful embedding* for exact strings it has never seen: a
+clause like "Section 4.2(b)", a product code "SKU-99317", an acronym. BM25 finds
+those instantly, because it searches by *exact words*, not meaning.
+
+The two have **complementary blind spots**: vector misses exact strings, BM25
+misses paraphrases. Run both and combine — neither's gap can sink an answer. That
+complementarity is the entire reason "hybrid retrieval" exists.
+
+### What BM25 is
+BM25 ("Best Match 25") is the classic keyword-ranking algorithm behind search
+engines like Elasticsearch and Lucene. It scores each chunk against the query with
+a number; higher = better. It's smarter than "count matching words" — it balances
+three ideas:
+
+1. **Term frequency, with diminishing returns** — more mentions of a query word =
+   more relevant, but the 10th mention adds far less than the 2nd. Stops a chunk
+   winning just by repeating a word.
+2. **Inverse document frequency (rare words matter more)** — common words like
+   "the" appear everywhere and carry no signal, so they're down-weighted; rare,
+   distinctive words like "payment" are up-weighted. It judges rarity by how many
+   chunks across the whole collection contain the word.
+3. **Length normalisation** — long chunks naturally contain more words, so they'd
+   unfairly match more. BM25 corrects for length so a tight short chunk can beat a
+   rambling long one.
+
+So: BM25 scores a chunk high when it contains your *rare, distinctive* query words,
+*several times*, without being *padded out* with length.
+
+### How it works mechanically (this shapes the code)
+BM25 needs to know how common each word is *across the whole collection* (for the
+rarity idea). So it builds an **index**: tokenise every chunk into plain words,
+pre-compute the statistics. Two consequences:
+
+- **It works on words, not the 384-number vectors.** Lowercase, split on
+  spaces/punctuation. No model, no GPU, no API — pure counting and arithmetic,
+  which is why it's fast and free.
+- **The index depends on the whole collection.** Because rarity is computed across
+  all chunks, adding new chunks changes the statistics, so the index is rebuilt on
+  add. Instant at our scale; at massive scale this is exactly why companies use
+  Elasticsearch instead.
+
+### Where it lives
+No database needed. We use `rank-bm25` (a small pure-Python library), build the
+index in memory, and `pickle` it to disk so it survives restarts. Shape: tokenise
+chunks → build index → save to disk → load back when searching.
+
+### A real gotcha (learned by running it)
+BM25 scores depend on collection statistics, so on a *tiny* corpus the
+inverse-document-frequency term can go **negative** — a word in your single
+document counts as appearing "everywhere," which the formula treats as
+uninformative. It only behaves sensibly with a realistic number of documents.
+Good reminder that BM25 is a collection-level algorithm, not per-document.
+
+### Why rank-bm25 and not Elasticsearch
+Not cost — Elasticsearch has a free self-hosted tier. It's that Elasticsearch is a
+whole separate server to run and manage, while rank-bm25 is a zero-infrastructure
+library, keeping the project self-contained (clone-and-run). The tradeoff:
+rank-bm25 holds the index in memory and rebuilds on add — fine for thousands of
+chunks, breaks at millions. At production scale, move to Elasticsearch/OpenSearch
+for incremental indexing and distributed search. Simple option chosen
+deliberately, knowing where it stops scaling.
+
+### The complete mental model
+**BM25 scores chunks by exact-word overlap, weighting rare query words higher,
+rewarding repeated mentions with diminishing returns, and correcting for length.
+It complements vector search by catching exact strings meaning-search misses. Built
+in memory from all chunks, pickled to disk.**
+
+### In one paragraph: why isn't vector search alone enough?
+*Why isn't vector search alone enough — what does BM25 catch that embeddings
+miss?*
+Vector search matches meaning but has no useful embedding for exact strings it
+never saw — clause numbers, product codes, acronyms. BM25 matches exact words, so
+it catches precisely those. They have complementary blind spots, so I run both and
+combine them; neither gap can sink an answer. BM25 is pure counting — no model, no
+cost — which is why it pairs so naturally with semantic search.
+
+---
+
+## 14. Planned: monitoring & observability
 
 > **Status: planned, not built yet.** Documented here because it's the part of
 > production AI work most portfolios ignore — and understanding *why* it matters
@@ -965,12 +1053,11 @@ retrieval phase onward, the code is written with **observability seams**:
 This means adding observability later is *additive* (fill in the hooks), not a
 rewrite. Designing for this from the start is itself a senior engineering habit.
 
-### Framing
-*"Most RAG portfolios stop at 'it produces answers.' But ~70% of production AI
-work is operating the system — latency, cost, and quality drift. So I designed
-the code with observability seams from the start, and the roadmap includes
-tracing, p50/p95 latency, cost-per-request, and CI gates on regressions, not just
-quality."*
+### In one paragraph: why observability matters
+Most RAG systems stop at "it produces answers," but ~70% of production AI work is
+operating the system — latency, cost, and quality drift. The code is designed with
+observability seams from the start, and the roadmap includes tracing, p50/p95
+latency, cost-per-request, and CI gates on regressions, not just quality.
 
 ---
 
@@ -986,7 +1073,10 @@ quality."*
 | (fill in) | Learned tokens and chunking concepts |
 | (fill in) | Built the chunker |
 | (fill in) | Learned embeddings and vector search concepts |
+| (fill in) | Built the embedder (ChromaDB) |
+| (fill in) | Learned BM25 concept and built the BM25 index |
 
 ---
 
-*Next up: building the embedder (stores chunks in ChromaDB), then the BM25 index.*
+*Next up: the hybrid retriever (combines vector + BM25 search), then the text
+extractor and pipeline toward a working end-to-end demo.*
