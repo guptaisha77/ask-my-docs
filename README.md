@@ -30,9 +30,10 @@ This project addresses all three:
   source passages, so responses are auditable rather than trusted blindly.
 - **CI-gated evaluation** runs RAGAS metrics on every pull request and blocks
   merges that regress answer quality below set thresholds.
-- **Monitoring & observability** (planned) adds tracing, latency percentiles
-  (p50/p95), and cost-per-request — because operating a RAG system is most of the
-  real work, and the code is built with the seams to support it from the start.
+- **Monitoring & observability** (planned) wraps every query stage as a
+  cross-cutting layer — tracing, latency percentiles (p50/p95), and
+  cost-per-request — because operating a RAG system is most of the real work, and
+  the code is built with the seams to support it from the start.
 
 ---
 
@@ -41,59 +42,52 @@ This project addresses all three:
 ```mermaid
 flowchart TD
     subgraph FE["Frontend — React + Vite + TanStack Query"]
-        UI["Upload UI"]
-        Chat["Chat interface"]
-        Cite["Citation panel"]
+        UI["Upload UI · Chat · Citation panel"]
     end
 
-    subgraph ING["Ingestion pipeline"]
-        Extract["Text extractor<br/>pypdf / plaintext"]
-        Chunk["Chunker<br/>700 tokens, 100 overlap"]
-        Embed["Embedder<br/>MiniLM-L6-v2"]
-        BM25idx["BM25 index<br/>rank-bm25"]
+    subgraph ING["Ingestion — runs once per document"]
+        Extract["Text extractor<br/>pypdf / plaintext"] --> Chunk["Chunker<br/>700 tok, 100 overlap"]
+        Chunk --> Embed["Embedder → ChromaDB<br/>MiniLM-L6-v2"]
+        Chunk --> BM25idx["BM25 index → disk<br/>rank-bm25"]
     end
 
-    subgraph STORE["Storage"]
-        Chroma[("ChromaDB<br/>vector store")]
-        Pickle[("BM25 index<br/>on disk")]
+    subgraph QRY["Query — runs every question"]
+        Q["Question"] --> VS["Vector search<br/>(ChromaDB)"]
+        Q --> KS["BM25 search<br/>(keyword)"]
+        VS --> Hybrid["Hybrid merge<br/>RRF fusion"]
+        KS --> Hybrid
+        Hybrid --> Rerank["Reranker top-5<br/>cross-encoder*"]
+        Rerank --> Gen["Generate · Groq Llama<br/>cite + retry*"]
+        Gen --> Ans["Cited answer"]
     end
 
-    subgraph RET["Retrieval + reranking"]
-        Hybrid["Hybrid merger<br/>dedup + fuse"]
-        Rerank["Cohere reranker<br/>cross-encoder, top-5"]
+    subgraph OBS["Observability — cross-cutting, run time"]
+        Trace["Per-query trace<br/>latency · chunks · tokens"] --> Agg["p50/p95 latency<br/>cost-per-request · quality drift"]
     end
 
-    subgraph GEN["Generation — LangGraph agent"]
-        Ctx["Build context"]
-        LLM["Generate answer<br/>Groq Llama 3.1"]
-        Valid["Citation validator<br/>retry if missing"]
-    end
-
-    subgraph EVAL["Evaluation + CI"]
-        Testset["Eval testset"]
-        Ragas["RAGAS metrics"]
-        Gate["CI gate<br/>fail below threshold"]
+    subgraph EV["Evaluation + CI — build time, fixed set"]
+        Testset["Golden question set"] --> Ragas["RAGAS metrics"] --> Gate["CI gate<br/>fail PR below threshold"]
     end
 
     UI --> Extract
-    Extract --> Chunk
-    Chunk --> Embed
-    Chunk --> BM25idx
-    Embed --> Chroma
-    BM25idx --> Pickle
+    UI --> Q
+    Ans --> UI
 
-    Chat --> Hybrid
-    Pickle --> Hybrid
-    Chroma --> Hybrid
-    Hybrid --> Rerank
-    Rerank --> Ctx
-    Ctx --> LLM
-    LLM --> Valid
-    Valid --> Cite
+    VS -.reports.-> Trace
+    KS -.reports.-> Trace
+    Hybrid -.reports.-> Trace
+    Rerank -.reports.-> Trace
+    Gen -.reports.-> Trace
 
-    Testset --> Ragas
-    Ragas --> Gate
+    classDef next stroke-dasharray: 5 5;
+    class Rerank,Gen next;
 ```
+
+> The dashed stages (reranker, citation-retry) are designed but not yet built —
+> see the [build status](#build-status) below. Observability is drawn as a
+> cross-cutting layer because every query stage reports into it, rather than being
+> a final step; eval + CI is separate because it runs at build time on a fixed
+> set, not on live traffic.
 
 ---
 
@@ -106,6 +100,7 @@ flowchart TD
 | Vector store | ChromaDB | Local, zero-infra vector database |
 | Embeddings | sentence-transformers (MiniLM-L6-v2) | Runs locally, no API cost |
 | Keyword search | rank-bm25 | Exact-term matching to complement vectors |
+| Fusion | Reciprocal Rank Fusion | Combines rankings without reconciling score scales |
 | Reranking | Cohere Rerank | Cross-encoder relevance scoring |
 | LLM / generation | Groq (Llama 3.1) | Fast, low-cost inference via an OpenAI-compatible API |
 | Orchestration | LangChain, LangGraph | Explicit, branchable agent graph |
@@ -122,11 +117,14 @@ flowchart TD
 | Document ingestion — token-aware chunker | ✅ Done |
 | Embedding + ChromaDB storage | ✅ Done |
 | BM25 keyword index | ✅ Done |
-| Text extractor (PDF / plaintext) | ⬜ Planned |
-| Hybrid retrieval + Cohere reranking | 🚧 In progress |
+| Hybrid retrieval (RRF fusion) | ✅ Done |
+| Grounded cited generation (Groq) | ✅ Done |
+| Text extractor (PDF / plaintext) | ✅ Done |
+| Ingestion pipeline (extract → chunk → dual store) | ✅ Done |
+| RAGAS evaluation + CI gate | 🚧 In progress |
+| Cohere reranking | ⬜ Planned |
 | LangGraph agent + citation enforcement | ⬜ Planned |
 | React frontend | ⬜ Planned |
-| RAGAS evaluation + CI gate | ⬜ Planned |
 | Monitoring & observability (tracing, p50/p95 latency, cost-per-request) | ⬜ Planned |
 
 ---
@@ -137,7 +135,7 @@ flowchart TD
 
 - Python 3.11+
 - [Bun](https://bun.sh) (for the frontend)
-- A Groq API key (from [console.groq.com](https://console.groq.com)) and a Cohere API key
+- A Groq API key (from [console.groq.com](https://console.groq.com)); a Cohere API key is optional (reranking is a planned phase)
 
 ### Backend setup
 
@@ -198,9 +196,9 @@ ask-my-docs/
 │   ├── app/
 │   │   ├── api/          # FastAPI route handlers
 │   │   ├── core/         # Config and settings
-│   │   ├── ingestion/    # Extract, chunk, embed, index
-│   │   ├── retrieval/    # Hybrid search + reranking
-│   │   └── graph/        # LangGraph RAG agent
+│   │   ├── ingestion/    # Extract, chunk, embed, index, pipeline
+│   │   ├── retrieval/    # Hybrid search (RRF) + reranking
+│   │   └── graph/        # Generation (and the planned LangGraph agent)
 │   ├── eval/             # RAGAS evaluation
 │   └── tests/
 ├── frontend/             # React + Vite app
