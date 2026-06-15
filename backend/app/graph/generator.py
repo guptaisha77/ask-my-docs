@@ -6,15 +6,17 @@ number, and say so if the sources don't contain the answer. This is the
 anti-hallucination core: grounding + citations + an honest no-answer path.
 """
 
+from langsmith.wrappers import wrap_openai
 from openai import OpenAI
 
 from app.core.config import settings
 
-# One client for the process, pointed at Groq's OpenAI-compatible endpoint.
-# Same library you'd use for OpenAI — only the base_url and key differ.
-_client = OpenAI(
-    api_key=settings.groq_api_key,
-    base_url=settings.groq_base_url,
+# wrap_openai auto-logs every call's latency + token usage to LangSmith.
+_client = wrap_openai(
+    OpenAI(
+        api_key=settings.groq_api_key,
+        base_url=settings.groq_base_url,
+    )
 )
 
 
