@@ -13,6 +13,19 @@ measured automatically on every change.
 
 ---
 
+
+## Demo: the eval gate in action
+
+Every pull request runs an automated LLM-judge evaluation that scores answer
+quality (faithfulness and relevancy) against a fixed golden set. The build
+**passes only if quality stays above threshold** — so a change that regresses
+answer quality fails CI and blocks the merge.
+
+![Eval gate passing](docs/eval-green.gif)
+
+---
+
+
 ## Why this project exists
 
 Most retrieval-augmented generation (RAG) demos stop at "embed documents, do a
@@ -28,8 +41,8 @@ This project addresses all three:
   question and passage *together*, lifting the genuinely relevant chunks to the top.
 - **Citation enforcement** validates that every answer points back to retrieved
   source passages, so responses are auditable rather than trusted blindly.
-- **CI-gated evaluation** runs RAGAS metrics on every pull request and blocks
-  merges that regress answer quality below set thresholds.
+- **CI-gated evaluation** runs an LLM-as-judge evaluation on every pull request
+  and blocks merges that regress answer quality below set thresholds.
 - **Monitoring & observability** (planned) wraps every query stage as a
   cross-cutting layer — tracing, latency percentiles (p50/p95), and
   cost-per-request — because operating a RAG system is most of the real work, and
@@ -104,7 +117,7 @@ flowchart TD
 | Reranking | Cohere Rerank | Cross-encoder relevance scoring |
 | LLM / generation | Groq (Llama 3.1) | Fast, low-cost inference via an OpenAI-compatible API |
 | Orchestration | LangChain, LangGraph | Explicit, branchable agent graph |
-| Evaluation | RAGAS | Faithfulness, relevancy, context precision/recall |
+| Evaluation | LLM-as-judge (Groq) | Faithfulness + relevancy, gated in CI |
 | CI | GitHub Actions | Automated eval gate on every PR |
 
 ---
@@ -121,7 +134,7 @@ flowchart TD
 | Grounded cited generation (Groq) | ✅ Done |
 | Text extractor (PDF / plaintext) | ✅ Done |
 | Ingestion pipeline (extract → chunk → dual store) | ✅ Done |
-| RAGAS evaluation + CI gate | 🚧 In progress |
+| LLM-judge evaluation + CI gate (Ruff lint + quality gate) | ✅ Done |
 | Cohere reranking | ⬜ Planned |
 | LangGraph agent + citation enforcement | ⬜ Planned |
 | React frontend | ⬜ Planned |
