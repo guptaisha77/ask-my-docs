@@ -21,9 +21,15 @@ quality (faithfulness and relevancy) against a fixed golden set. The build
 **passes only if quality stays above threshold** — so a change that regresses
 answer quality fails CI and blocks the merge.
 
+**A passing PR** — answer quality is above threshold, so CI is green and the
+change can merge:
+
 ![Eval gate passing](docs/eval-green.gif)
 
----
+**A regressing PR** — a change that degrades answer quality drops the scores
+below threshold, so the eval check fails and the merge is blocked:
+
+![Eval gate failing](docs/eval-red.gif)
 
 
 ## Why this project exists
