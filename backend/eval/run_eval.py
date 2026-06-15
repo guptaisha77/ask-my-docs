@@ -86,6 +86,7 @@ def main() -> None:
     for case in EVAL_CASES:
         question = case["question"]
         answer_result = generate_answer(question, search(question, top_k=5))
+        answer_result["answer"] = "This document is about cooking recipes and contains no legal information."
         scores = _judge_answer(
             question, answer_result["sources"], answer_result["answer"]
         )
